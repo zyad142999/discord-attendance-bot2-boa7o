@@ -31,6 +31,10 @@ const config = {
 
   // قناة لوقات المودريشن
   modLogChannelName: process.env.MOD_LOG_CHANNEL_NAME || 'log-zyad',
+
+  // IDs قنوات اللوقات
+  rolesLogChannelId: process.env.ROLES_LOG_CHANNEL_ID || '1552068234633678961',
+  punishmentLogChannelId: process.env.PUNISHMENT_LOG_CHANNEL_ID || '1552068510333796423',
 };
 
 module.exports = config;
