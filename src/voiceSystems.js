@@ -10,11 +10,22 @@ const { EmbedBuilder, AuditLogEvent } = require('discord.js');
 const config = require('./config');
 const attendanceStore = require('./attendanceStore');
 
+// ─── مساعد: جيب قناة بالـ ID ──────────────────────────────────
+function findChannelById(guild, channelId) {
+  console.log('[ChannelSearch] Looking for channel by ID:', channelId);
+  const channel = guild.channels.cache.get(channelId);
+  console.log('[ChannelSearch] Found channel:', channel ? channel.name : 'null', 'ID:', channel ? channel.id : 'null');
+  return channel || null;
+}
+
 // ─── مساعد: جيب قناة باسمها ──────────────────────────────────
 function findChannelByName(guild, name) {
-  return guild.channels.cache.find(
+  console.log('[ChannelSearch] Looking for channel by name:', name);
+  const channel = guild.channels.cache.find(
     (c) => c.name === name && c.isTextBased && c.isTextBased()
-  ) || null;
+  );
+  console.log('[ChannelSearch] Found channel:', channel ? channel.name : 'null', 'ID:', channel ? channel.id : 'null');
+  return channel || null;
 }
 
 function findVoiceChannelByName(guild, name) {
@@ -329,8 +340,50 @@ async function getModLogChannel(guild) {
 
 async function sendModLog(guild, embed) {
   const channel = await getModLogChannel(guild);
-  if (!channel) return;
-  await channel.send({ embeds: [embed] }).catch(() => {});
+  if (!channel) {
+    console.log('[ModLog] Channel not found:', config.modLogChannelName);
+    return;
+  }
+  console.log('[ModLog] Sending to channel:', channel.name, 'ID:', channel.id);
+  await channel.send({ embeds: [embed] }).catch((error) => {
+    console.error('[ModLog] Failed to send log:', error.message);
+  });
+}
+
+// ─── ٤. لوقات الرتب ──────────────────────────────────────────────
+
+async function getRolesLogChannel(guild) {
+  return findChannelById(guild, config.rolesLogChannelId);
+}
+
+async function sendRolesLog(guild, embed) {
+  const channel = await getRolesLogChannel(guild);
+  if (!channel) {
+    console.log('[RoleLog] Channel not found by ID:', config.rolesLogChannelId);
+    return;
+  }
+  console.log('[RoleLog] Sending to channel:', channel.name, 'ID:', channel.id);
+  await channel.send({ embeds: [embed] }).catch((error) => {
+    console.error('[RoleLog] Failed to send log:', error.message);
+  });
+}
+
+// ─── ٥. لوقات العقوبات ───────────────────────────────────────────
+
+async function getPunishmentLogChannel(guild) {
+  return findChannelById(guild, config.punishmentLogChannelId);
+}
+
+async function sendPunishmentLog(guild, embed) {
+  const channel = await getPunishmentLogChannel(guild);
+  if (!channel) {
+    console.log('[PunishmentLog] Channel not found by ID:', config.punishmentLogChannelId);
+    return;
+  }
+  console.log('[PunishmentLog] Sending to channel:', channel.name, 'ID:', channel.id);
+  await channel.send({ embeds: [embed] }).catch((error) => {
+    console.error('[PunishmentLog] Failed to send log:', error.message);
+  });
 }
 
 /**
@@ -338,38 +391,62 @@ async function sendModLog(guild, embed) {
  * يراقب: BAN / UNBAN / TIMEOUT / MEMBER_UPDATE (mute/deafen) / MEMBER_DISCONNECT / MEMBER_MOVE
  */
 async function handleAuditLog(entry, guild) {
-  const { action, executor, target, changes, reason, extra } = entry;
+  try {
+    const { action, executor, target, changes, reason, extra } = entry;
 
-  // تجاهل أفعال البوت نفسه
-  if (executor?.bot) return;
+    console.log('[ModLog] Audit log entry received:', { action, executor: executor?.tag, target: target?.id });
 
-  let embed = null;
+    // تجاهل أفعال البوت نفسه
+    if (executor?.bot) {
+      console.log('[ModLog] Ignoring bot action');
+      return;
+    }
 
-  // ─── BAN ───
-  if (action === AuditLogEvent.MemberBanAdd) {
-    embed = new EmbedBuilder()
-      .setColor(0xed4245)
-      .setTitle('🔨 باند')
-      .addFields(
-        { name: '👤 المفعول به', value: `<@${target.id}> (${target.tag || target.id})`, inline: true },
-        { name: '🛡️ الفاعل', value: `<@${executor.id}> (${executor.tag || executor.id})`, inline: true },
-        { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
-      )
-      .setTimestamp();
-  }
+    // التحقق من وجود target
+    if (!target || !target.id) {
+      console.log('[ModLog] Target is null or missing id, skipping');
+      return;
+    }
 
-  // ─── UNBAN ───
-  else if (action === AuditLogEvent.MemberBanRemove) {
-    embed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('✅ رفع باند')
-      .addFields(
-        { name: '👤 المفعول به', value: `<@${target.id}> (${target.tag || target.id})`, inline: true },
-        { name: '🛡️ الفاعل', value: `<@${executor.id}> (${executor.tag || executor.id})`, inline: true },
-        { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
-      )
-      .setTimestamp();
-  }
+    // التحقق من وجود executor
+    if (!executor || !executor.id) {
+      console.log('[ModLog] Executor is null or missing id, skipping');
+      return;
+    }
+
+    let embed = null;
+
+    // ─── BAN ───
+    if (action === AuditLogEvent.MemberBanAdd) {
+      embed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setTitle('🔨 باند')
+        .addFields(
+          { name: '👤 المفعول به', value: `<@${target.id}> (${target.tag || target.id})`, inline: true },
+          { name: '🛡️ الفاعل', value: `<@${executor.id}> (${executor.tag || executor.id})`, inline: true },
+          { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
+        )
+        .setTimestamp();
+
+      // إرسال لوق العقوبات أيضاً
+      await sendPunishmentLog(guild, embed);
+    }
+
+    // ─── UNBAN ───
+    else if (action === AuditLogEvent.MemberBanRemove) {
+      embed = new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle('✅ رفع باند')
+        .addFields(
+          { name: '👤 المفعول به', value: `<@${target.id}> (${target.tag || target.id})`, inline: true },
+          { name: '🛡️ الفاعل', value: `<@${executor.id}> (${executor.tag || executor.id})`, inline: true },
+          { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
+        )
+        .setTimestamp();
+
+      // إرسال لوق العقوبات أيضاً
+      await sendPunishmentLog(guild, embed);
+    }
 
   // ─── TIMEOUT ───
   else if (action === AuditLogEvent.MemberUpdate) {
@@ -396,6 +473,7 @@ async function handleAuditLog(entry, guild) {
             )
             .setTimestamp();
           await sendModLog(guild, embed);
+          await sendPunishmentLog(guild, embed);
           return;
         } else if (wasTimedOut && !isTimedOut) {
           // رفع تايم اوت
@@ -408,6 +486,7 @@ async function handleAuditLog(entry, guild) {
             )
             .setTimestamp();
           await sendModLog(guild, embed);
+          await sendPunishmentLog(guild, embed);
           return;
         }
       }
@@ -458,6 +537,9 @@ async function handleAuditLog(entry, guild) {
         { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
       )
       .setTimestamp();
+
+    // إرسال لوق العقوبات أيضاً
+    await sendPunishmentLog(guild, embed);
   }
 
   // ─── MEMBER MOVE (نقل من روم لروم) ───
@@ -489,6 +571,106 @@ async function handleAuditLog(entry, guild) {
 
   if (embed) {
     await sendModLog(guild, embed);
+  }
+  } catch (error) {
+    console.error('[ModLog] Error in handleAuditLog:', error.message);
+    console.error('[ModLog] Error stack:', error.stack);
+  }
+}
+
+/**
+ * يُستدعى عند GuildAuditLogEntryCreate للوقات الرتب
+ * يراقب: ROLE_UPDATE (إضافة/إزالة رتب)
+ */
+async function handleRoleLog(entry, guild) {
+  try {
+    const { action, executor, target, changes, reason } = entry;
+
+    console.log('[RoleLog] Audit log entry received:', { action, executor: executor?.tag, target: target?.id });
+
+    // تجاهل أفعال البوت نفسه
+    if (executor?.bot) {
+      console.log('[RoleLog] Ignoring bot action');
+      return;
+    }
+
+    // التحقق من وجود target
+    if (!target || !target.id) {
+      console.log('[RoleLog] Target is null or missing id, skipping');
+      return;
+    }
+
+    // التحقق من وجود executor
+    if (!executor || !executor.id) {
+      console.log('[RoleLog] Executor is null or missing id, skipping');
+      return;
+    }
+
+    // فقط للوقات الرتب
+    if (action !== AuditLogEvent.MemberRoleUpdate) {
+      console.log('[RoleLog] Not a role update, action:', action);
+      return;
+    }
+
+    if (!changes || changes.length === 0) {
+      console.log('[RoleLog] No changes detected');
+      return;
+    }
+
+    console.log('[RoleLog] Role update detected, changes:', changes.map(c => c.key));
+
+    // التحقق من التغييرات في الرتب
+    const roleChanges = changes.filter(change => change.key === '$add' || change.key === '$remove');
+    if (roleChanges.length === 0) {
+      console.log('[RoleLog] No role changes found');
+      return;
+    }
+
+    console.log('[RoleLog] Processing role changes:', roleChanges.length);
+
+    for (const change of roleChanges) {
+      const addedRoles = change.key === '$add' ? change.new : [];
+      const removedRoles = change.key === '$remove' ? change.new : [];
+
+      console.log('[RoleLog] Added roles:', addedRoles.length, 'Removed roles:', removedRoles.length);
+
+      if (addedRoles.length > 0) {
+        for (const role of addedRoles) {
+          console.log('[RoleLog] Sending role add log for role:', role.name);
+          const embed = new EmbedBuilder()
+            .setColor(0x57f287)
+            .setTitle('➕ إضافة رتبة')
+            .addFields(
+              { name: '👤 العضو', value: `<@${target.id}>`, inline: true },
+              { name: '🏷️ الرتبة', value: `<@&${role.id}> (${role.name})`, inline: true },
+              { name: '🛡️ الفاعل', value: `<@${executor.id}>`, inline: true },
+              { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
+            )
+            .setTimestamp();
+          await sendRolesLog(guild, embed);
+        }
+      }
+
+      if (removedRoles.length > 0) {
+        for (const role of removedRoles) {
+          console.log('[RoleLog] Sending role remove log for role:', role.name);
+          const embed = new EmbedBuilder()
+            .setColor(0xed4245)
+            .setTitle('➖ إزالة رتبة')
+            .addFields(
+              { name: '👤 العضو', value: `<@${target.id}>`, inline: true },
+              { name: '🏷️ الرتبة', value: `<@&${role.id}> (${role.name})`, inline: true },
+              { name: '🛡️ الفاعل', value: `<@${executor.id}>`, inline: true },
+              { name: '📋 السبب', value: reason || 'بدون سبب', inline: false }
+            )
+            .setTimestamp();
+          await sendRolesLog(guild, embed);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[RoleLog] Error in handleRoleLog:', error.message);
+    console.error('[RoleLog] Error stack:', error.stack);
   }
 }
 
@@ -522,4 +704,5 @@ module.exports = {
   startAfkChecker,
   startVoiceLeaderboard,
   handleAuditLog,
+  handleRoleLog,
 };

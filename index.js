@@ -8,7 +8,6 @@ const {
 } = require('discord.js');
 const config = require('./src/config');
 const { handleInteraction } = require('./src/interactions');
-const { handleMusicMessage } = require('./src/musicCommands');
 const attendanceStore = require('./src/attendanceStore');
 const {
   handleVoiceStateForSystems,
@@ -16,6 +15,7 @@ const {
   startAfkChecker,
   startVoiceLeaderboard,
   handleAuditLog,
+  handleRoleLog,
 } = require('./src/voiceSystems');
 
 const client = new Client({
@@ -189,12 +189,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  try {
-    await handleMusicMessage(message);
-  } catch (error) {
-    console.error('خطأ في أمر الموسيقى:', error);
-    await message.reply('صار خطأ أثناء تنفيذ أمر الموسيقى.').catch(() => {});
-  }
+  // نظام الموسيقى تم إزالته
 });
 
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
@@ -221,12 +216,24 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   }
 });
 
-// ─── لوقات المودريشن ──────────────────────────────────────────
+// ─── لوقات المودريشن والرتب ───────────────────────────────────
 client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
   try {
+    console.log('[AuditLog] Entry received:', {
+      action: entry.action,
+      actionType: entry.actionType,
+      executor: entry.executor?.tag,
+      target: entry.target?.id,
+      guild: guild.name
+    });
+
+    // معالجة لوقات المودريشن
     await handleAuditLog(entry, guild);
+    // معالجة لوقات الرتب
+    await handleRoleLog(entry, guild);
   } catch (e) {
-    console.error('[ModLog] خطأ:', e.message);
+    console.error('[AuditLog] خطأ:', e.message);
+    console.error('[AuditLog] Stack:', e.stack);
   }
 });
 
