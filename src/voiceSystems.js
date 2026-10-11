@@ -192,7 +192,7 @@ function buildProgressBar(minutes, maxMinutes) {
   return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-async function buildVoiceLeaderboardEmbed(client, guild) {
+async function buildVoiceLeaderboardEmbed(client, guild, period = 'weekly') {
   const now = Date.now();
 
   // ١. نجيب كل الأعضاء في السيرفر (مو بوتات)
@@ -204,7 +204,7 @@ async function buildVoiceLeaderboardEmbed(client, guild) {
   }
 
   // ٢. نجيب الساعات المحفوظة
-  const savedData = attendanceStore.getVoiceLeaderboard();
+  const savedData = attendanceStore.getVoicePeriodLeaderboard(period);
   const minutesMap = new Map();
   for (const entry of savedData) {
     minutesMap.set(entry.userId, { totalMinutes: entry.totalMinutes, live: false });
@@ -242,7 +242,8 @@ async function buildVoiceLeaderboardEmbed(client, guild) {
   entries.sort((a, b) => b.totalMinutes - a.totalMinutes);
 
   // ٦. نبني الـ embed — نقسم لأجزاء لأن Discord يحد الـ embed بـ 6000 حرف
-  const lines = entries.map((e, i) => {
+  const shownEntries = entries.slice(0, 55);
+  const lines = shownEntries.map((e, i) => {
     const h = Math.floor(e.totalMinutes / 60);
     const m = e.totalMinutes % 60;
     const timeStr = e.totalMinutes === 0
@@ -260,13 +261,13 @@ async function buildVoiceLeaderboardEmbed(client, guild) {
 
   const embeds = chunks.map((chunk, i) => {
     const e = new EmbedBuilder()
-      .setColor(0x5865f2)
+      .setColor(period === 'daily' ? 0x57f287 : 0x5865f2)
       .setDescription(chunk);
     if (i === 0) {
-      e.setTitle('🏆  Voice Hours Leaderboard');
+      e.setTitle(period === 'daily' ? '🏆 Daily Voice Leaderboard' : '🏆 Voice Hours Leaderboard');
     }
     if (i === chunks.length - 1) {
-      e.setFooter({ text: `🔴 In voice now  •  🔄 Updates every 30s  •  ${entries.length} members` });
+      e.setFooter({ text: `🔴 In voice now  •  🔄 Updates every 30s  •  Top ${shownEntries.length} of ${entries.length} members` });
       e.setTimestamp();
     }
     return e;
@@ -275,61 +276,104 @@ async function buildVoiceLeaderboardEmbed(client, guild) {
   return embeds;
 }
 
-// نحفظ IDs الرسائل المنشورة (قد تكون أكثر من رسالة)
-let leaderboardMessageIds = [];
-let leaderboardChannelId = null;
+function riyadhDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+function currentPeriodKey(period, date = new Date()) {
+  const day = riyadhDateKey(date);
+  if (period === 'daily') return day;
+  const [year, month, dateOfMonth] = day.split('-').map(Number);
+  const monday = new Date(Date.UTC(year, month - 1, dateOfMonth));
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, '0')}-${String(monday.getUTCDate()).padStart(2, '0')}`;
+}
+
+function formatVoiceTime(totalMinutes) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours}h ${minutes ? `${minutes}m` : ''}` : `${minutes}m`;
+}
+
+async function publishWinners(channel, period, key, winners, previousState) {
+  if (previousState?.winnerMessageId && previousState.channelId === channel.id) {
+    const oldMessage = await channel.messages.fetch(previousState.winnerMessageId).catch(() => null);
+    if (oldMessage) await oldMessage.delete().catch(() => {});
+  }
+  const title = period === 'daily' ? '🏆 Daily Voice Winners' : '🏆 Weekly Voice Leaderboard';
+  const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+  const winnerLimit = period === 'daily' ? 5 : 7;
+  const description = winners.length
+    ? winners.slice(0, winnerLimit).map((entry, index) => `${medals[index]} **${index < 3 ? 'Congratulations!' : '💪 Hard Luck!'}**\n└ <@${entry.userId}> — ⏱️ **${formatVoiceTime(entry.totalMinutes)}**`).join('\n\n')
+    : 'No voice activity was recorded in this period.';
+  const message = await channel.send({ embeds: [new EmbedBuilder().setColor(period === 'daily' ? 0x57f287 : 0xffc107).setTitle(title).setDescription(description).setFooter({ text: `Top ${Math.min(winners.length, winnerLimit)} members • Period ending ${key}` }).setTimestamp()] });
+  return message.id;
+}
+
+async function updatePeriodBoard(client, guild, period, channelName) {
+  const channel = findChannelByName(guild, channelName);
+  if (!channel) return;
+  let state = attendanceStore.getVoicePeriod(period);
+  const key = currentPeriodKey(period);
+  if (!state.key) {
+    state.key = key;
+    state.minutes = state.minutes || {};
+    attendanceStore.setVoicePeriod(period, state);
+  } else if (state.key !== key) {
+    // Preserve the final partial sessions in the period being closed.
+    const now = Date.now();
+    for (const session of voiceSessions.values()) {
+      const minutes = Math.floor((now - session.joinedAt) / 60000);
+      if (minutes > 0) attendanceStore.addVoiceMinutes(session.userId, minutes);
+      session.joinedAt = now;
+    }
+    state = attendanceStore.getVoicePeriod(period);
+    const winners = attendanceStore.getVoicePeriodLeaderboard(period);
+    const winnerMessageId = await publishWinners(channel, period, state.key, winners, state);
+    state = { ...state, key, minutes: {}, winnerMessageId, channelId: channel.id, boardMessageIds: [] };
+    attendanceStore.setVoicePeriod(period, state);
+  }
+
+  const embeds = await buildVoiceLeaderboardEmbed(client, guild, period);
+  const current = attendanceStore.getVoicePeriod(period);
+  const ids = current.boardMessageIds || [];
+  let success = ids.length === embeds.length;
+  if (success) {
+    for (let i = 0; i < ids.length; i++) {
+      const message = await channel.messages.fetch(ids[i]).catch(() => null);
+      if (!message) { success = false; break; }
+      await message.edit({ embeds: [embeds[i]] }).catch(() => { success = false; });
+      if (!success) break;
+    }
+  }
+  if (success) return;
+  for (const id of ids) {
+    const message = await channel.messages.fetch(id).catch(() => null);
+    if (message) await message.delete().catch(() => {});
+  }
+  const newIds = [];
+  for (const embed of embeds) {
+    const message = await channel.send({ embeds: [embed] }).catch((error) => {
+      console.error(`[Leaderboard:${period}] Failed to publish:`, error.message);
+      return null;
+    });
+    if (message) newIds.push(message.id);
+  }
+  current.boardMessageIds = newIds;
+  current.channelId = channel.id;
+  attendanceStore.setVoicePeriod(period, current);
+}
 
 async function updateVoiceLeaderboard(client) {
   for (const guild of client.guilds.cache.values()) {
-    const channel = findChannelByName(guild, config.voiceLeaderboardChannelName);
-    if (!channel) continue;
-
-    const embeds = await buildVoiceLeaderboardEmbed(client, guild);
-
-    // لو عندنا رسائل سابقة بنفس العدد — نعدلها
-    if (
-      leaderboardMessageIds.length === embeds.length &&
-      leaderboardChannelId === channel.id
-    ) {
-      let allOk = true;
-      for (let i = 0; i < leaderboardMessageIds.length; i++) {
-        try {
-          const msg = await channel.messages.fetch(leaderboardMessageIds[i]);
-          await msg.edit({ embeds: [embeds[i]] });
-        } catch {
-          allOk = false;
-          break;
-        }
-      }
-      if (allOk) continue;
-    }
-
-    // نحذف الرسائل القديمة ونبدأ من جديد
-    for (const msgId of leaderboardMessageIds) {
-      try {
-        const msg = await channel.messages.fetch(msgId);
-        await msg.delete();
-      } catch { /* تجاهل */ }
-    }
-    leaderboardMessageIds = [];
-    leaderboardChannelId = channel.id;
-
-    for (const embed of embeds) {
-      try {
-        const msg = await channel.send({ embeds: [embed] });
-        leaderboardMessageIds.push(msg.id);
-      } catch (e) {
-        console.error('[Leaderboard] فشل النشر:', e.message);
-      }
-    }
+    await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName);
+    await updatePeriodBoard(client, guild, 'weekly', config.voiceLeaderboardChannelName);
   }
 }
 
 function startVoiceLeaderboard(client) {
-  // أول تحديث بعد 5 ثواني من البدء
-  setTimeout(() => updateVoiceLeaderboard(client), 5000);
-  // ثم كل 30 ثانية
-  setInterval(() => updateVoiceLeaderboard(client), 30 * 1000);
+  setTimeout(() => updateVoiceLeaderboard(client).catch((e) => console.error('[Leaderboard] Update failed:', e)), 5000);
+  setInterval(() => updateVoiceLeaderboard(client).catch((e) => console.error('[Leaderboard] Update failed:', e)), 30 * 1000);
 }
 
 // ─── ٣. لوقات المودريشن ──────────────────────────────────────

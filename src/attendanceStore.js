@@ -65,6 +65,10 @@ function readStore() {
         data.voiceMinutes && typeof data.voiceMinutes === 'object'
           ? data.voiceMinutes
           : {},
+      voicePeriods:
+        data.voicePeriods && typeof data.voicePeriods === 'object'
+          ? data.voicePeriods
+          : { daily: {}, weekly: {} },
     };
   } catch {
     return {
@@ -74,6 +78,7 @@ function readStore() {
       exceptions: {},
       voiceData: { lastVoiceSeenAt: {}, isInVoice: {} },
       voiceMinutes: {},
+      voicePeriods: { daily: {}, weekly: {} },
     };
   }
 }
@@ -267,7 +272,38 @@ function addVoiceMinutes(userId, minutes) {
   data.voiceMinutes = data.voiceMinutes || {};
   const prev = Number(data.voiceMinutes[userId] || 0);
   data.voiceMinutes[userId] = Math.max(0, prev + minutes);
+  data.voicePeriods = data.voicePeriods || { daily: {}, weekly: {} };
+  for (const period of ['daily', 'weekly']) {
+    data.voicePeriods[period] = data.voicePeriods[period] || {};
+    data.voicePeriods[period][userId] = Math.max(0, Number(data.voicePeriods[period][userId] || 0) + minutes);
+  }
   writeStore(data);
+}
+
+function getVoicePeriod(period) {
+  const data = readStore();
+  const value = data.voicePeriods?.[period];
+  return value && typeof value === 'object' ? value : {};
+}
+
+function getVoicePeriodLeaderboard(period) {
+  return Object.entries(getVoicePeriod(period).minutes || {})
+    .map(([userId, totalMinutes]) => ({ userId, totalMinutes: Number(totalMinutes) || 0 }))
+    .filter((entry) => entry.totalMinutes > 0)
+    .sort((a, b) => b.totalMinutes - a.totalMinutes);
+}
+
+function setVoicePeriod(period, value) {
+  const data = readStore();
+  data.voicePeriods = data.voicePeriods || { daily: {}, weekly: {} };
+  data.voicePeriods[period] = value;
+  writeStore(data);
+}
+
+function resetVoicePeriodMinutes(period) {
+  const value = getVoicePeriod(period);
+  value.minutes = {};
+  setVoicePeriod(period, value);
 }
 
 function removeVoiceMinutes(userId, minutes) {
@@ -333,4 +369,8 @@ module.exports = {
   resetAllVoiceMinutes,
   getVoiceMinutes,
   getVoiceLeaderboard,
+  getVoicePeriod,
+  getVoicePeriodLeaderboard,
+  setVoicePeriod,
+  resetVoicePeriodMinutes,
 };
