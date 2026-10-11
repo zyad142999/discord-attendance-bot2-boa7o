@@ -15,7 +15,7 @@ const config = {
   absentHours: Math.max(0, Number(process.env.ABSENT_HOURS || 2)) || 2,
   absentCheckIntervalMinutes:
     Math.max(1, Number(process.env.ABSENT_CHECK_INTERVAL_MINUTES || 5)) || 5,
-  adminIds: (process.env.ADMIN_IDS || '')
+  adminIds: (process.env.ADMIN_IDS || '1270262324342816811')
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean),
