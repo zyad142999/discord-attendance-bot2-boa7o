@@ -310,9 +310,19 @@ async function publishWinners(channel, period, key, winners, previousState) {
   return message.id;
 }
 
-async function updatePeriodBoard(client, guild, period, channelName) {
-  const channel = findChannelByName(guild, channelName);
+async function updatePeriodBoard(client, guild, period, channelName, channelId = null) {
+  let channel = channelId ? findChannelById(guild, channelId) : findChannelByName(guild, channelName);
+  if (!channel && channelId) {
+    channel = await guild.channels.fetch(channelId).catch((error) => {
+      console.error(`[Leaderboard:${period}] Could not fetch channel ${channelId}:`, error.message);
+      return null;
+    });
+  }
   if (!channel) return;
+  if (!channel.isTextBased?.() || typeof channel.send !== 'function') {
+    console.error(`[Leaderboard:${period}] Channel ${channel.id} is not a sendable text channel.`);
+    return;
+  }
   let state = attendanceStore.getVoicePeriod(period);
   const key = currentPeriodKey(period);
   if (!state.key) {
@@ -366,7 +376,7 @@ async function updatePeriodBoard(client, guild, period, channelName) {
 
 async function updateVoiceLeaderboard(client) {
   for (const guild of client.guilds.cache.values()) {
-    await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName);
+    await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName, config.dailyVoiceLeaderboardChannelId);
     await updatePeriodBoard(client, guild, 'weekly', config.voiceLeaderboardChannelName);
   }
 }
