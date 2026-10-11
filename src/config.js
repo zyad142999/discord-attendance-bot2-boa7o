@@ -29,6 +29,7 @@ const config = {
   // لوحة الساعات الصوتية
   voiceLeaderboardChannelName: process.env.VOICE_LEADERBOARD_CHANNEL_NAME || 'التفاعل',
   dailyVoiceLeaderboardChannelName: process.env.DAILY_VOICE_LEADERBOARD_CHANNEL_NAME || 'تفاعل يومي',
+  dailyVoiceLeaderboardChannelId: process.env.DAILY_VOICE_LEADERBOARD_CHANNEL_ID || '1558910139875070073',
 
   // قناة لوقات المودريشن
   modLogChannelName: process.env.MOD_LOG_CHANNEL_NAME || 'log-zyad',
