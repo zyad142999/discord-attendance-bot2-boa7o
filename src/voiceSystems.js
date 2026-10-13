@@ -325,6 +325,25 @@ async function deleteBoardMessages(channel, messageIds = []) {
   }
 }
 
+async function deletePreviousPeriodMessages(channel, period, botUserId) {
+  if (!channel || !botUserId) return;
+  const titles = period === 'daily'
+    ? new Set(['🏆 Daily Voice Leaderboard', '🏆 Daily Voice Winners'])
+    : new Set(['🏆  Voice Hours Leaderboard', '🏆 Voice Hours Leaderboard', '🏆 Weekly Voice Leaderboard']);
+  const messages = await channel.messages.fetch({ limit: 100 }).catch((error) => {
+    console.error(`[Leaderboard:${period}] Could not inspect old posts:`, error.message);
+    return null;
+  });
+  if (!messages) return;
+  for (const message of messages.values()) {
+    if (message.author?.id !== botUserId) continue;
+    if (!message.embeds.some((embed) => titles.has(embed.title))) continue;
+    await message.delete().catch((error) => {
+      console.error(`[Leaderboard:${period}] Could not delete old post ${message.id}:`, error.message);
+    });
+  }
+}
+
 async function updatePeriodBoard(client, guild, period, channelName, channelId = null) {
   let channel = channelId ? findChannelById(guild, channelId) : findChannelByName(guild, channelName);
   if (!channel && channelId) {
@@ -358,6 +377,10 @@ async function updatePeriodBoard(client, guild, period, channelName, channelId =
       ? await guild.channels.fetch(state.channelId).catch(() => null)
       : channel;
     await deleteBoardMessages(oldBoardChannel || channel, state.boardMessageIds);
+    await deletePreviousPeriodMessages(oldBoardChannel || channel, period, client.user?.id);
+    if (oldBoardChannel && oldBoardChannel.id !== channel.id) {
+      await deletePreviousPeriodMessages(channel, period, client.user?.id);
+    }
     const winnerMessageId = await publishWinners(channel, period, state.key, winners, state);
     state = { ...state, key, minutes: {}, winnerMessageId, channelId: channel.id, boardMessageIds: [] };
     attendanceStore.setVoicePeriod(period, state);
