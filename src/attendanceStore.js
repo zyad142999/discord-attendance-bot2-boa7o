@@ -299,11 +299,10 @@ function normalizeVoicePeriod(value) {
 
   for (const [key, entry] of Object.entries(value)) {
     if (key === 'minutes') continue;
-    if (/^\d{17,20}$/.test(key) && Number.isFinite(Number(entry))) {
-      minutes[key] = Math.max(Number(minutes[key]) || 0, Number(entry) || 0);
-    } else {
-      metadata[key] = entry;
-    }
+    // Old releases saved totals beside metadata, so daily and weekly periods
+    // were mixed across resets. They cannot be reliably split after the fact.
+    if (/^\d{17,20}$/.test(key)) continue;
+    metadata[key] = entry;
   }
   return { ...metadata, minutes };
 }
