@@ -69,6 +69,10 @@ function readStore() {
         data.voicePeriods && typeof data.voicePeriods === 'object'
           ? data.voicePeriods
           : { daily: {}, weekly: {} },
+      voiceSessions:
+        data.voiceSessions && typeof data.voiceSessions === 'object'
+          ? data.voiceSessions
+          : {},
     };
   } catch {
     return {
@@ -79,6 +83,7 @@ function readStore() {
       voiceData: { lastVoiceSeenAt: {}, isInVoice: {} },
       voiceMinutes: {},
       voicePeriods: { daily: {}, weekly: {} },
+      voiceSessions: {},
     };
   }
 }
@@ -267,23 +272,46 @@ function clearVoiceData(userId) {
 
 // ─── دوال تتبع الساعات الصوتية ───────────────────────────────
 
-function addVoiceMinutes(userId, minutes) {
+function addVoiceMinutes(userId, minutes, nextSession = null) {
   const data = readStore();
   data.voiceMinutes = data.voiceMinutes || {};
   const prev = Number(data.voiceMinutes[userId] || 0);
   data.voiceMinutes[userId] = Math.max(0, prev + minutes);
   data.voicePeriods = data.voicePeriods || { daily: {}, weekly: {} };
   for (const period of ['daily', 'weekly']) {
-    data.voicePeriods[period] = data.voicePeriods[period] || {};
-    data.voicePeriods[period][userId] = Math.max(0, Number(data.voicePeriods[period][userId] || 0) + minutes);
+    data.voicePeriods[period] = normalizeVoicePeriod(data.voicePeriods[period]);
+    const periodMinutes = data.voicePeriods[period].minutes;
+    periodMinutes[userId] = Math.max(0, Number(periodMinutes[userId] || 0) + minutes);
+  }
+  if (nextSession) {
+    data.voiceSessions = data.voiceSessions || {};
+    data.voiceSessions[userId] = nextSession;
   }
   writeStore(data);
+}
+
+function normalizeVoicePeriod(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) value = {};
+  const metadata = {};
+  const minutes = value.minutes && typeof value.minutes === 'object' && !Array.isArray(value.minutes)
+    ? { ...value.minutes }
+    : {};
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'minutes') continue;
+    if (/^\d{17,20}$/.test(key) && Number.isFinite(Number(entry))) {
+      minutes[key] = Math.max(Number(minutes[key]) || 0, Number(entry) || 0);
+    } else {
+      metadata[key] = entry;
+    }
+  }
+  return { ...metadata, minutes };
 }
 
 function getVoicePeriod(period) {
   const data = readStore();
   const value = data.voicePeriods?.[period];
-  return value && typeof value === 'object' ? value : {};
+  return normalizeVoicePeriod(value);
 }
 
 function getVoicePeriodLeaderboard(period) {
@@ -296,7 +324,25 @@ function getVoicePeriodLeaderboard(period) {
 function setVoicePeriod(period, value) {
   const data = readStore();
   data.voicePeriods = data.voicePeriods || { daily: {}, weekly: {} };
-  data.voicePeriods[period] = value;
+  data.voicePeriods[period] = normalizeVoicePeriod(value);
+  writeStore(data);
+}
+
+function getVoiceSessions() {
+  return readStore().voiceSessions || {};
+}
+
+function setVoiceSession(userId, session) {
+  const data = readStore();
+  data.voiceSessions = data.voiceSessions || {};
+  data.voiceSessions[userId] = session;
+  writeStore(data);
+}
+
+function removeVoiceSession(userId) {
+  const data = readStore();
+  if (!data.voiceSessions) return;
+  delete data.voiceSessions[userId];
   writeStore(data);
 }
 
@@ -373,4 +419,8 @@ module.exports = {
   getVoicePeriodLeaderboard,
   setVoicePeriod,
   resetVoicePeriodMinutes,
+  getVoiceSessions,
+  setVoiceSession,
+  removeVoiceSession,
 };
+
