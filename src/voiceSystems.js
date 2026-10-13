@@ -63,6 +63,7 @@ function handleVoiceStateForSystems(oldState, newState, client) {
       channelId: newChannel,
       deafenedAt: (newState?.selfDeaf || newState?.serverDeaf) ? now : undefined,
     });
+    attendanceStore.setVoiceSession(userId, { joinedAt: now, channelId: newChannel });
   } else if (oldChannel && !newChannel) {
     // طلع من الروم — نحفظ الوقت حتى لو ثواني
     const session = voiceSessions.get(userId);
@@ -74,6 +75,7 @@ function handleVoiceStateForSystems(oldState, newState, client) {
       const totalNow = attendanceStore.getVoiceMinutes(userId);
       console.log(`[Voice] ${userId} إجمالي الوقت المحفوظ = ${totalNow}د`);
       voiceSessions.delete(userId);
+      attendanceStore.removeVoiceSession(userId);
     } else {
       console.log(`[Voice] ${userId} طلع لكن ما في session محفوظة`);
     }
@@ -91,6 +93,7 @@ function handleVoiceStateForSystems(oldState, newState, client) {
       channelId: newChannel,
       deafenedAt: (newState?.selfDeaf || newState?.serverDeaf) ? now : undefined,
     });
+    attendanceStore.setVoiceSession(userId, { joinedAt: now, channelId: newChannel });
   } else if (oldChannel && newChannel && oldChannel === newChannel) {
     // نفس الروم — تغيير حالة (mute/deaf)
     const session = voiceSessions.get(userId);
@@ -167,6 +170,7 @@ function startAfkChecker(client) {
             if (minutes > 0) attendanceStore.addVoiceMinutes(userId, minutes);
             session.joinedAt = now;
             session.channelId = afkChannel.id;
+            attendanceStore.setVoiceSession(userId, { joinedAt: now, channelId: afkChannel.id });
           }
         } catch (e) {
           console.error(`[AFK] فشل نقل ${userId}:`, e.message);
@@ -296,18 +300,29 @@ function formatVoiceTime(totalMinutes) {
 }
 
 async function publishWinners(channel, period, key, winners, previousState) {
+  let previousWinnerMessage = null;
   if (previousState?.winnerMessageId && previousState.channelId === channel.id) {
-    const oldMessage = await channel.messages.fetch(previousState.winnerMessageId).catch(() => null);
-    if (oldMessage) await oldMessage.delete().catch(() => {});
+    previousWinnerMessage = await channel.messages.fetch(previousState.winnerMessageId).catch(() => null);
   }
   const title = period === 'daily' ? '🏆 Daily Voice Winners' : '🏆 Weekly Voice Leaderboard';
-  const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
-  const winnerLimit = period === 'daily' ? 5 : 7;
+  const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+  const winnerLimit = 5;
   const description = winners.length
     ? winners.slice(0, winnerLimit).map((entry, index) => `${medals[index]} **${index < 3 ? 'Congratulations!' : '💪 Hard Luck!'}**\n└ <@${entry.userId}> — ⏱️ **${formatVoiceTime(entry.totalMinutes)}**`).join('\n\n')
     : 'No voice activity was recorded in this period.';
   const message = await channel.send({ embeds: [new EmbedBuilder().setColor(period === 'daily' ? 0x57f287 : 0xffc107).setTitle(title).setDescription(description).setFooter({ text: `Top ${Math.min(winners.length, winnerLimit)} members • Period ending ${key}` }).setTimestamp()] });
+  if (previousWinnerMessage) await previousWinnerMessage.delete().catch(() => {});
   return message.id;
+}
+
+async function deleteBoardMessages(channel, messageIds = []) {
+  if (!channel || !Array.isArray(messageIds)) return;
+  for (const id of messageIds) {
+    const message = await channel.messages.fetch(id).catch(() => null);
+    if (message) await message.delete().catch((error) => {
+      console.error('[Leaderboard] Could not delete previous board message:', error.message);
+    });
+  }
 }
 
 async function updatePeriodBoard(client, guild, period, channelName, channelId = null) {
@@ -334,11 +349,15 @@ async function updatePeriodBoard(client, guild, period, channelName, channelId =
     const now = Date.now();
     for (const session of voiceSessions.values()) {
       const minutes = Math.floor((now - session.joinedAt) / 60000);
-      if (minutes > 0) attendanceStore.addVoiceMinutes(session.userId, minutes);
       session.joinedAt = now;
+      attendanceStore.addVoiceMinutes(session.userId, minutes, { joinedAt: now, channelId: session.channelId });
     }
     state = attendanceStore.getVoicePeriod(period);
     const winners = attendanceStore.getVoicePeriodLeaderboard(period);
+    const oldBoardChannel = state.channelId && state.channelId !== channel.id
+      ? await guild.channels.fetch(state.channelId).catch(() => null)
+      : channel;
+    await deleteBoardMessages(oldBoardChannel || channel, state.boardMessageIds);
     const winnerMessageId = await publishWinners(channel, period, state.key, winners, state);
     state = { ...state, key, minutes: {}, winnerMessageId, channelId: channel.id, boardMessageIds: [] };
     attendanceStore.setVoicePeriod(period, state);
@@ -374,10 +393,28 @@ async function updatePeriodBoard(client, guild, period, channelName, channelId =
   attendanceStore.setVoicePeriod(period, current);
 }
 
+function checkpointVoiceSessions() {
+  const now = Date.now();
+  for (const session of voiceSessions.values()) {
+    const completeMinutes = Math.floor((now - session.joinedAt) / 60000);
+    if (completeMinutes <= 0) continue;
+    session.joinedAt += completeMinutes * 60000;
+    attendanceStore.addVoiceMinutes(session.userId, completeMinutes, { joinedAt: session.joinedAt, channelId: session.channelId });
+  }
+}
+
+let leaderboardUpdateRunning = false;
 async function updateVoiceLeaderboard(client) {
-  for (const guild of client.guilds.cache.values()) {
-    await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName, config.dailyVoiceLeaderboardChannelId);
-    await updatePeriodBoard(client, guild, 'weekly', config.voiceLeaderboardChannelName);
+  if (leaderboardUpdateRunning) return;
+  leaderboardUpdateRunning = true;
+  try {
+    checkpointVoiceSessions();
+    for (const guild of client.guilds.cache.values()) {
+      await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName, config.dailyVoiceLeaderboardChannelId);
+      await updatePeriodBoard(client, guild, 'weekly', config.voiceLeaderboardChannelName);
+    }
+  } finally {
+    leaderboardUpdateRunning = false;
   }
 }
 
@@ -733,21 +770,32 @@ async function handleRoleLog(entry, guild) {
  */
 function initVoiceSessions(client) {
   const now = Date.now();
+  const savedSessions = attendanceStore.getVoiceSessions();
+  const activeUserIds = new Set();
   for (const guild of client.guilds.cache.values()) {
     for (const [, voiceState] of guild.voiceStates.cache) {
       if (!voiceState.channelId) continue;
       if (voiceState.member?.user?.bot) continue;
       const userId = voiceState.id;
+      activeUserIds.add(userId);
       const isDeaf = voiceState.selfDeaf || voiceState.serverDeaf;
+      const savedSession = savedSessions[userId];
+      const joinedAt = savedSession?.channelId === voiceState.channelId && Number.isFinite(Number(savedSession.joinedAt))
+        ? Number(savedSession.joinedAt)
+        : now;
       voiceSessions.set(userId, {
         userId,
-        joinedAt: now,
+        joinedAt,
         channelId: voiceState.channelId,
         // لو مدفون من الأول نبدأ العداد من الحين
         deafenedAt: isDeaf ? now : undefined,
       });
+      attendanceStore.setVoiceSession(userId, { joinedAt, channelId: voiceState.channelId });
       console.log(`[Init] ${userId} — deaf: ${isDeaf} — channel: ${voiceState.channelId}`);
     }
+  }
+  for (const userId of Object.keys(savedSessions)) {
+    if (!activeUserIds.has(userId)) attendanceStore.removeVoiceSession(userId);
   }
   console.log(`[VoiceSessions] تم تسجيل ${voiceSessions.size} شخص في الرومات عند البدء`);
 }
@@ -760,3 +808,4 @@ module.exports = {
   handleAuditLog,
   handleRoleLog,
 };
+
