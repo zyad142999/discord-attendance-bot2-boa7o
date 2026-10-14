@@ -30,6 +30,7 @@ const config = {
   voiceLeaderboardChannelName: process.env.VOICE_LEADERBOARD_CHANNEL_NAME || 'التفاعل',
   dailyVoiceLeaderboardChannelName: process.env.DAILY_VOICE_LEADERBOARD_CHANNEL_NAME || 'تفاعل يومي',
   dailyVoiceLeaderboardChannelId: process.env.DAILY_VOICE_LEADERBOARD_CHANNEL_ID || '1558910139875070073',
+  voiceXpLeaderboardChannelId: process.env.VOICE_XP_LEADERBOARD_CHANNEL_ID || '1559929185194217492',
 
   // قناة لوقات المودريشن
   modLogChannelName: process.env.MOD_LOG_CHANNEL_NAME || 'log-zyad',

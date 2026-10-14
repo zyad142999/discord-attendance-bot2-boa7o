@@ -5,6 +5,8 @@ const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
 const DATA_DIR = path.resolve(process.env.BOT_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || DEFAULT_DATA_DIR);
 const DATA_FILE = path.join(DATA_DIR, 'attendance.json');
 const LEGACY_DATA_FILE = path.join(DEFAULT_DATA_DIR, 'attendance.json');
+const XP_UNITS_PER_VOICE_MINUTE = 25;
+const XP_UNITS_PER_XP = 3;
 
 function ensureStore() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -39,6 +41,8 @@ function ensureStore() {
           exceptions: {},
           voiceData: { lastVoiceSeenAt: {}, isInVoice: {} },
           voiceMinutes: {},
+          voiceXpUnits: {},
+          voiceXpBoard: {},
         },
         null,
         2
@@ -72,6 +76,19 @@ function readStore() {
         data.voiceMinutes && typeof data.voiceMinutes === 'object'
           ? data.voiceMinutes
           : {},
+      voiceXpUnits:
+        data.voiceXpUnits && typeof data.voiceXpUnits === 'object' && !Array.isArray(data.voiceXpUnits)
+          ? data.voiceXpUnits
+          : Object.fromEntries(
+              Object.entries(data.voiceMinutes || {}).map(([userId, minutes]) => [
+                userId,
+                Math.max(0, Number(minutes) || 0) * XP_UNITS_PER_VOICE_MINUTE,
+              ])
+            ),
+      voiceXpBoard:
+        data.voiceXpBoard && typeof data.voiceXpBoard === 'object' && !Array.isArray(data.voiceXpBoard)
+          ? data.voiceXpBoard
+          : {},
       voicePeriods:
         data.voicePeriods && typeof data.voicePeriods === 'object'
           ? data.voicePeriods
@@ -89,6 +106,8 @@ function readStore() {
       exceptions: {},
       voiceData: { lastVoiceSeenAt: {}, isInVoice: {} },
       voiceMinutes: {},
+      voiceXpUnits: {},
+      voiceXpBoard: {},
       voicePeriods: { daily: {}, weekly: {} },
       voiceSessions: {},
     };
@@ -284,6 +303,10 @@ function addVoiceMinutes(userId, minutes, nextSession = null) {
   data.voiceMinutes = data.voiceMinutes || {};
   const prev = Number(data.voiceMinutes[userId] || 0);
   data.voiceMinutes[userId] = Math.max(0, prev + minutes);
+  data.voiceXpUnits = data.voiceXpUnits || {};
+  const previousXpUnits = Number(data.voiceXpUnits[userId] || 0);
+  const earnedXpUnits = Math.max(0, Number(minutes) || 0) * XP_UNITS_PER_VOICE_MINUTE;
+  data.voiceXpUnits[userId] = Math.max(0, previousXpUnits + earnedXpUnits);
   data.voicePeriods = data.voicePeriods || { daily: {}, weekly: {} };
   for (const period of ['daily', 'weekly']) {
     data.voicePeriods[period] = normalizeVoicePeriod(data.voicePeriods[period]);
@@ -384,6 +407,32 @@ function getVoiceMinutes(userId) {
   return Number(data.voiceMinutes?.[userId] || 0);
 }
 
+function getVoiceXp(userId) {
+  const data = readStore();
+  return Math.max(0, Number(data.voiceXpUnits?.[userId]) || 0) / XP_UNITS_PER_XP;
+}
+
+function getVoiceXpLeaderboard() {
+  const data = readStore();
+  return Object.entries(data.voiceXpUnits || {})
+    .map(([userId, xpUnits]) => ({
+      userId,
+      totalXp: Math.max(0, Number(xpUnits) || 0) / XP_UNITS_PER_XP,
+    }))
+    .filter((entry) => entry.totalXp > 0)
+    .sort((a, b) => b.totalXp - a.totalXp);
+}
+
+function getVoiceXpBoardState() {
+  return readStore().voiceXpBoard || {};
+}
+
+function setVoiceXpBoardState(value) {
+  const data = readStore();
+  data.voiceXpBoard = value && typeof value === 'object' ? value : {};
+  writeStore(data);
+}
+
 function getVoiceLeaderboard() {
   const data = readStore();
   return Object.entries(data.voiceMinutes || {})
@@ -420,6 +469,10 @@ module.exports = {
   resetVoiceMinutes,
   resetAllVoiceMinutes,
   getVoiceMinutes,
+  getVoiceXp,
+  getVoiceXpLeaderboard,
+  getVoiceXpBoardState,
+  setVoiceXpBoardState,
   getVoiceLeaderboard,
   getVoicePeriod,
   getVoicePeriodLeaderboard,

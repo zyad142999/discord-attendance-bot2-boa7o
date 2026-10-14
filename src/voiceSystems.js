@@ -10,6 +10,10 @@ const { EmbedBuilder, AuditLogEvent } = require('discord.js');
 const config = require('./config');
 const attendanceStore = require('./attendanceStore');
 
+const XP_PER_LEVEL = 1000;
+const levelSyncCache = new Map();
+const levelRoleCreationPromises = new Map();
+
 // ─── مساعد: جيب قناة بالـ ID ──────────────────────────────────
 function findChannelById(guild, channelId) {
   console.log('[ChannelSearch] Looking for channel by ID:', channelId);
@@ -299,6 +303,145 @@ function formatVoiceTime(totalMinutes) {
   return hours ? `${hours}h ${minutes ? `${minutes}m` : ''}` : `${minutes}m`;
 }
 
+function getLevelRoleColor(level) {
+  const colors = [
+    0x57f287, 0x1abc9c, 0x3498db, 0x5865f2, 0x9b59b6,
+    0xe84393, 0xe74c3c, 0xe67e22, 0xf1c40f, 0xd4af37,
+  ];
+  if (level <= colors.length) return colors[level - 1];
+
+  const hue = ((level * 37 + 167) % 360) / 60;
+  const saturation = 0.82;
+  const lightness = Math.max(0.4, 0.56 - Math.floor(level / 20) * 0.015);
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = chroma * (1 - Math.abs((hue % 2) - 1));
+  let rgb;
+  if (hue < 1) rgb = [chroma, x, 0];
+  else if (hue < 2) rgb = [x, chroma, 0];
+  else if (hue < 3) rgb = [0, chroma, x];
+  else if (hue < 4) rgb = [0, x, chroma];
+  else if (hue < 5) rgb = [x, 0, chroma];
+  else rgb = [chroma, 0, x];
+
+  const match = lightness - chroma / 2;
+  const [red, green, blue] = rgb.map((value) => Math.round((value + match) * 255));
+  return (red << 16) | (green << 8) | blue;
+}
+
+function getLevelFromXp(totalXp) {
+  return Math.floor(Math.max(0, Number(totalXp) || 0) / XP_PER_LEVEL);
+}
+
+function getLevelFromRoleName(name) {
+  const match = /^level[- ]?(\d+)$/i.exec(name || '');
+  return match ? Number(match[1]) : 0;
+}
+
+async function getOrCreateLevelRole(guild, level) {
+  const roleName = `Level-${level}`;
+  const color = getLevelRoleColor(level);
+  let role = guild.roles.cache.find((candidate) => candidate.name === roleName);
+  if (!role) {
+    const key = `${guild.id}:${level}`;
+    let pending = levelRoleCreationPromises.get(key);
+    if (!pending) {
+      pending = guild.roles.create({
+        name: roleName,
+        color,
+        reason: `Automatic voice XP reward for level ${level}`,
+      }).finally(() => levelRoleCreationPromises.delete(key));
+      levelRoleCreationPromises.set(key, pending);
+    }
+    role = await pending;
+  } else if (role.color !== color) {
+    await role.edit({ color, reason: `Update automatic color for level ${level}` }).catch((error) => {
+      console.error(`[XP] Could not update ${roleName} color:`, error.message);
+    });
+  }
+  return role;
+}
+
+async function syncVoiceLevelRole(guild, userId) {
+  const totalXp = attendanceStore.getVoiceXp(userId);
+  const level = getLevelFromXp(totalXp);
+  if (level < 1) return;
+
+  const member = guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
+  if (!member || member.user?.bot) return;
+
+  try {
+    const role = await getOrCreateLevelRole(guild, level);
+    const existingLevelRoles = member.roles.cache.filter((candidate) => getLevelFromRoleName(candidate.name) > 0);
+    const cacheKey = `${guild.id}:${userId}`;
+    if (levelSyncCache.get(cacheKey) === level && member.roles.cache.has(role.id) && existingLevelRoles.size === 1) return;
+
+    if (!member.roles.cache.has(role.id)) {
+      await member.roles.add(role, `Reached voice XP level ${level}`);
+    }
+    const oldRoles = member.roles.cache.filter((candidate) =>
+      getLevelFromRoleName(candidate.name) > 0 && candidate.id !== role.id
+    );
+    if (oldRoles.size) {
+      await member.roles.remove(oldRoles.map((oldRole) => oldRole.id), `Replace previous voice XP level with level ${level}`);
+    }
+    levelSyncCache.set(cacheKey, level);
+  } catch (error) {
+    console.error(`[XP] Could not assign level ${level} to ${userId}:`, error.message);
+  }
+}
+
+async function updateVoiceXpLeaderboard(client, guild) {
+  const entries = attendanceStore.getVoiceXpLeaderboard();
+  for (const entry of entries) {
+    await syncVoiceLevelRole(guild, entry.userId);
+  }
+
+  const channelId = config.voiceXpLeaderboardChannelId;
+  let channel = findChannelById(guild, channelId);
+  if (!channel) {
+    channel = await guild.channels.fetch(channelId).catch((error) => {
+      console.error('[XP] Could not fetch leaderboard channel:', error.message);
+      return null;
+    });
+  }
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') return;
+
+  const top = entries.slice(0, 50);
+  const description = top.length
+    ? top.map((entry, index) => {
+        const xp = Math.floor(entry.totalXp);
+        return `**${index + 1}.** <@${entry.userId}> — Level **${getLevelFromXp(xp)}** • **${xp.toLocaleString('en-US')} XP**`;
+      }).join('\n')
+    : 'لم يكتسب أحد XP صوتيًا بعد.';
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🏆 قائمة المتصدرين اليومية')
+    .setDescription(description)
+    .setFooter({ text: `أفضل ${top.length} من ${entries.length} عضو • XP تراكمي • 500 XP لكل ساعة صوتية • تحديث كل 30 ثانية` })
+    .setTimestamp();
+
+  const state = attendanceStore.getVoiceXpBoardState();
+  let message = null;
+  if (state.channelId === channel.id && state.messageId) {
+    message = await channel.messages.fetch(state.messageId).catch(() => null);
+    if (message?.author?.id !== client.user?.id) message = null;
+  }
+  if (!message) {
+    const recentMessages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    message = recentMessages?.find((candidate) =>
+      candidate.author?.id === client.user?.id &&
+      candidate.embeds.some((previousEmbed) => previousEmbed.title === '🏆 قائمة المتصدرين اليومية')
+    ) || null;
+  }
+
+  if (message) {
+    await message.edit({ embeds: [embed] });
+  } else {
+    message = await channel.send({ embeds: [embed] });
+  }
+  attendanceStore.setVoiceXpBoardState({ channelId: channel.id, messageId: message.id });
+}
+
 async function publishWinners(channel, period, key, winners, previousState) {
   let previousWinnerMessage = null;
   if (previousState?.winnerMessageId && previousState.channelId === channel.id) {
@@ -435,6 +578,9 @@ async function updateVoiceLeaderboard(client) {
     for (const guild of client.guilds.cache.values()) {
       await updatePeriodBoard(client, guild, 'daily', config.dailyVoiceLeaderboardChannelName, config.dailyVoiceLeaderboardChannelId);
       await updatePeriodBoard(client, guild, 'weekly', config.voiceLeaderboardChannelName);
+      if (guild.id === config.guildId) {
+        await updateVoiceXpLeaderboard(client, guild);
+      }
     }
   } finally {
     leaderboardUpdateRunning = false;
