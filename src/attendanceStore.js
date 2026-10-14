@@ -1,8 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DEFAULT_DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = path.resolve(process.env.BOT_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || DEFAULT_DATA_DIR);
 const DATA_FILE = path.join(DATA_DIR, 'attendance.json');
+const LEGACY_DATA_FILE = path.join(DEFAULT_DATA_DIR, 'attendance.json');
 
 function ensureStore() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -17,6 +19,11 @@ function ensureStore() {
         fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
         return;
       } catch { /* نكمل بالملف الجديد */ }
+    }
+    // If the storage path was changed, preserve a local data file when it is still available.
+    if (DATA_FILE !== LEGACY_DATA_FILE && fs.existsSync(LEGACY_DATA_FILE)) {
+      fs.copyFileSync(LEGACY_DATA_FILE, DATA_FILE);
+      return;
     }
     fs.writeFileSync(
       DATA_FILE,
